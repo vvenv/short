@@ -9,13 +9,13 @@ Group=www-data
 WorkingDirectory=/opt/short
 Environment=NODE_ENV=production
 Environment=S_HOST=127.0.0.1
-Environment=S_PORT=8787
+Environment=S_PORT=8788
 Environment=S_DOMAIN=s.wenfu.dev
 Environment=MM_ORIGIN=https://mm.wenfu.dev
 Environment=S_DATA_DIR=/var/lib/short
 Environment=S_CORS_ORIGINS=https://mm.wenfu.dev
 Environment=S_TRUST_PROXY=1
-ExecStart=/usr/bin/node /opt/short/server.mjs
+ExecStart=/opt/node/bin/node /opt/short/server.mjs
 Restart=on-failure
 RestartSec=2
 NoNewPrivileges=true

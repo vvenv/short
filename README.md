@@ -28,7 +28,7 @@ S_DATA_DIR=./data S_CORS_ORIGINS=http://127.0.0.1:4173,http://localhost:4173 \
   node server.mjs
 ```
 
-默认监听 `127.0.0.1:8787`。
+默认本地监听 `127.0.0.1:8787`；生产（与 tomrun 错开）为 `8788`。
 
 ## 部署
 
