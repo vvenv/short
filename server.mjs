@@ -19,14 +19,17 @@ const HOST = process.env.S_HOST || "127.0.0.1";
 const PORT = Number(process.env.S_PORT || 8787);
 const DOMAIN = (process.env.S_DOMAIN || "s.wenfu.dev").replace(/\/$/, "");
 const MM_ORIGIN = (process.env.MM_ORIGIN || "https://mm.wenfu.dev").replace(/\/$/, "");
-const DATA_DIR = process.env.S_DATA_DIR || path.join(__dirname, "data");
+const DATA_DIR = path.resolve(process.env.S_DATA_DIR || path.join(__dirname, "data"));
 const MAX_PAYLOAD_BYTES = Number(process.env.S_MAX_PAYLOAD || 512 * 1024);
 const ID_LEN = 8;
 const RATE_WINDOW_MS = 60_000;
-const RATE_MAX = Number(process.env.S_RATE_MAX || 30);
+const RATE_MAX_WRITE = Number(process.env.S_RATE_MAX || 30);
+const RATE_MAX_READ = Number(process.env.S_RATE_MAX_READ || 120);
+const TRUST_PROXY = /^(1|true|yes)$/i.test(String(process.env.S_TRUST_PROXY || ""));
 
 const ID_RE = /^[A-Za-z0-9_-]{4,32}$/;
 const PAYLOAD_RE = /^[A-Za-z0-9_-]+$/;
+const ORIGIN_RE = /^https:\/\/[A-Za-z0-9.-]+(?::\d+)?$/;
 
 const CORS_ORIGINS = new Set(
   String(process.env.S_CORS_ORIGINS || `${MM_ORIGIN},http://localhost:4173,http://127.0.0.1:4173`)
@@ -35,32 +38,63 @@ const CORS_ORIGINS = new Set(
     .filter(Boolean),
 );
 
-fs.mkdirSync(DATA_DIR, { recursive: true });
+if (!ORIGIN_RE.test(MM_ORIGIN) && !/^http:\/\/(localhost|127\.0\.0\.1)(?::\d+)?$/.test(MM_ORIGIN)) {
+  console.error(`[s-wenfu] invalid MM_ORIGIN: ${MM_ORIGIN}`);
+  process.exit(1);
+}
+
+fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
 
 const rateBuckets = new Map();
 
+const SECURITY_HEADERS = {
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "no-referrer",
+  "X-Frame-Options": "DENY",
+  "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+  "Permissions-Policy": "geolocation=(), microphone=(), camera=()",
+};
+
 function clientIp(req) {
-  const forwarded = req.headers["x-forwarded-for"];
-  if (typeof forwarded === "string" && forwarded.trim()) {
-    return forwarded.split(",")[0].trim();
+  if (TRUST_PROXY) {
+    // Prefer nginx X-Real-IP ($remote_addr). Never take the first XFF hop —
+    // clients can spoof it when nginx uses $proxy_add_x_forwarded_for.
+    const realIp = req.headers["x-real-ip"];
+    if (typeof realIp === "string" && realIp.trim()) {
+      return realIp.trim();
+    }
+    const forwarded = req.headers["x-forwarded-for"];
+    if (typeof forwarded === "string" && forwarded.trim()) {
+      const parts = forwarded.split(",").map((s) => s.trim()).filter(Boolean);
+      if (parts.length) return parts[parts.length - 1];
+    }
   }
   return req.socket.remoteAddress || "unknown";
 }
 
-function rateLimited(ip) {
+function rateLimited(ip, kind, max) {
+  const key = `${ip}:${kind}`;
   const now = Date.now();
-  let bucket = rateBuckets.get(ip);
+  let bucket = rateBuckets.get(key);
   if (!bucket || now - bucket.start >= RATE_WINDOW_MS) {
     bucket = { start: now, count: 0 };
-    rateBuckets.set(ip, bucket);
+    rateBuckets.set(key, bucket);
   }
   bucket.count += 1;
-  return bucket.count > RATE_MAX;
+  return bucket.count > max;
 }
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, bucket] of rateBuckets) {
+    if (now - bucket.start >= RATE_WINDOW_MS * 2) rateBuckets.delete(ip);
+  }
+}, RATE_WINDOW_MS).unref();
 
 function json(res, status, body, extraHeaders = {}) {
   const data = JSON.stringify(body);
   res.writeHead(status, {
+    ...SECURITY_HEADERS,
     "Content-Type": "application/json; charset=utf-8",
     "Content-Length": Buffer.byteLength(data),
     "Cache-Control": "no-store",
@@ -71,6 +105,7 @@ function json(res, status, body, extraHeaders = {}) {
 
 function text(res, status, body, extraHeaders = {}) {
   res.writeHead(status, {
+    ...SECURITY_HEADERS,
     "Content-Type": "text/plain; charset=utf-8",
     "Cache-Control": "no-store",
     ...extraHeaders,
@@ -92,7 +127,11 @@ function corsHeaders(req) {
 }
 
 function recordPath(id) {
-  return path.join(DATA_DIR, `${id}.json`);
+  const file = path.resolve(DATA_DIR, `${id}.json`);
+  if (!file.startsWith(`${DATA_DIR}${path.sep}`)) {
+    throw new Error("invalid path");
+  }
+  return file;
 }
 
 function readRecord(id) {
@@ -100,6 +139,7 @@ function readRecord(id) {
     const raw = fs.readFileSync(recordPath(id), "utf8");
     const data = JSON.parse(raw);
     if (!data || typeof data.payload !== "string") return null;
+    if (!PAYLOAD_RE.test(data.payload)) return null;
     return data;
   } catch {
     return null;
@@ -123,8 +163,13 @@ function writeRecord(id, payload) {
     payload,
     createdAt: Date.now(),
   });
-  fs.writeFileSync(tmp, body, { encoding: "utf8", mode: 0o644 });
+  fs.writeFileSync(tmp, body, { encoding: "utf8", mode: 0o600 });
   fs.renameSync(tmp, file);
+  try {
+    fs.chmodSync(file, 0o600);
+  } catch {
+    /* ignore */
+  }
 }
 
 function readBody(req, limit) {
@@ -147,15 +192,21 @@ function readBody(req, limit) {
 
 async function handlePostApi(req, res) {
   const ip = clientIp(req);
-  if (rateLimited(ip)) {
+  if (rateLimited(ip, "w", RATE_MAX_WRITE)) {
     json(res, 429, { error: "请求过于频繁" }, corsHeaders(req));
+    return;
+  }
+  const contentType = String(req.headers["content-type"] || "");
+  if (contentType && !contentType.toLowerCase().startsWith("application/json")) {
+    json(res, 415, { error: "需要 application/json" }, corsHeaders(req));
     return;
   }
   let raw;
   try {
     raw = await readBody(req, MAX_PAYLOAD_BYTES + 2048);
   } catch (error) {
-    json(res, error.status || 400, { error: error.message || "读取失败" }, corsHeaders(req));
+    const status = error.status || 400;
+    json(res, status, { error: status === 413 ? "请求体过大" : "读取失败" }, corsHeaders(req));
     return;
   }
   let body;
@@ -184,11 +235,16 @@ async function handlePostApi(req, res) {
       corsHeaders(req),
     );
   } catch (error) {
-    json(res, 500, { error: error.message || "写入失败" }, corsHeaders(req));
+    console.error("[s-wenfu] write failed:", error);
+    json(res, 500, { error: "写入失败" }, corsHeaders(req));
   }
 }
 
 function handleGetApi(req, res, id) {
+  if (rateLimited(clientIp(req), "r", RATE_MAX_READ)) {
+    json(res, 429, { error: "请求过于频繁" }, corsHeaders(req));
+    return;
+  }
   if (!ID_RE.test(id)) {
     json(res, 400, { error: "无效的 id" }, corsHeaders(req));
     return;
@@ -201,7 +257,11 @@ function handleGetApi(req, res, id) {
   json(res, 200, { id, payload: record.payload }, corsHeaders(req));
 }
 
-function handleRedirect(res, id) {
+function handleRedirect(req, res, id) {
+  if (rateLimited(clientIp(req), "r", RATE_MAX_READ)) {
+    text(res, 429, "Too many requests");
+    return;
+  }
   if (!ID_RE.test(id)) {
     text(res, 404, "Not found");
     return;
@@ -213,6 +273,7 @@ function handleRedirect(res, id) {
   }
   const location = `${MM_ORIGIN}/?s=${encodeURIComponent(id)}`;
   res.writeHead(302, {
+    ...SECURITY_HEADERS,
     Location: location,
     "Cache-Control": "no-store",
   });
@@ -237,6 +298,7 @@ const server = http.createServer(async (req, res) => {
 
   if (req.method === "OPTIONS" && (pathname === "/api" || pathname.startsWith("/api/"))) {
     res.writeHead(204, {
+      ...SECURITY_HEADERS,
       ...corsHeaders(req),
       "Access-Control-Max-Age": "86400",
     });
@@ -260,7 +322,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === "GET" && /^\/[A-Za-z0-9_-]+$/.test(pathname)) {
-    handleRedirect(res, pathname.slice(1));
+    handleRedirect(req, res, pathname.slice(1));
     return;
   }
 
@@ -272,6 +334,13 @@ const server = http.createServer(async (req, res) => {
   text(res, 404, "Not found");
 });
 
+server.requestTimeout = 30_000;
+server.headersTimeout = 15_000;
+server.keepAliveTimeout = 5_000;
+server.maxHeadersCount = 50;
+
 server.listen(PORT, HOST, () => {
-  console.log(`[s-wenfu] http://${HOST}:${PORT} domain=${DOMAIN} mm=${MM_ORIGIN} data=${DATA_DIR}`);
+  console.log(
+    `[s-wenfu] http://${HOST}:${PORT} domain=${DOMAIN} mm=${MM_ORIGIN} data=${DATA_DIR} trustProxy=${TRUST_PROXY}`,
+  );
 });

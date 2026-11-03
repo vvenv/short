@@ -38,7 +38,7 @@ S_DATA_DIR=./data S_CORS_ORIGINS=http://127.0.0.1:4173,http://localhost:4173 \
 2. 复制 `scripts/env.production.example` → `.env.production`，填 `DEPLOY_HOST` 等
 3. `pnpm deploy`（同步到 `/opt/short`、装 `short.service`、nginx、证书）
 
-环境变量见 `deploy/systemd/short.service`：`S_DOMAIN`、`MM_ORIGIN`、`S_DATA_DIR=/var/lib/short`。
+环境变量见 `deploy/systemd/short.service`：`S_DOMAIN`、`MM_ORIGIN`、`S_DATA_DIR=/var/lib/short`、`S_TRUST_PROXY=1`（生产经 nginx 反代时开启，按 `X-Real-IP` 限流）。
 
 ## 许可
 

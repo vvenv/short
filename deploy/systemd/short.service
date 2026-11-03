@@ -14,11 +14,22 @@ Environment=S_DOMAIN=s.wenfu.dev
 Environment=MM_ORIGIN=https://mm.wenfu.dev
 Environment=S_DATA_DIR=/var/lib/short
 Environment=S_CORS_ORIGINS=https://mm.wenfu.dev
+Environment=S_TRUST_PROXY=1
 ExecStart=/usr/bin/node /opt/short/server.mjs
 Restart=on-failure
 RestartSec=2
 NoNewPrivileges=true
 PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/short
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
 
 [Install]
 WantedBy=multi-user.target
