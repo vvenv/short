@@ -1,0 +1,22 @@
+{
+  "name": "short",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Lightweight first-party short links for wenfu.dev (s.wenfu.dev).",
+  "license": "MIT",
+  "homepage": "https://s.wenfu.dev/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vvenv/short.git"
+  },
+  "bugs": {
+    "url": "https://github.com/vvenv/short/issues"
+  },
+  "type": "module",
+  "packageManager": "pnpm@11.22.0",
+  "scripts": {
+    "start": "node server.mjs",
+    "deploy": "bash scripts/deploy.sh",
+    "test": "node --test test/**/*.test.mjs"
+  }
+}

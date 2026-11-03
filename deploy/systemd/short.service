@@ -1,0 +1,24 @@
+[Unit]
+Description=s.wenfu.dev short-link service
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/short
+Environment=NODE_ENV=production
+Environment=S_HOST=127.0.0.1
+Environment=S_PORT=8787
+Environment=S_DOMAIN=s.wenfu.dev
+Environment=MM_ORIGIN=https://mm.wenfu.dev
+Environment=S_DATA_DIR=/var/lib/short
+Environment=S_CORS_ORIGINS=https://mm.wenfu.dev
+ExecStart=/usr/bin/node /opt/short/server.mjs
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
